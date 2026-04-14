@@ -11,7 +11,7 @@ const BUCKET = 'models'
  * Upload a file to Supabase Storage.
  * Returns the public URL on success.
  */
-export async function uploadModel(file: File): Promise<string> {
+export async function uploadModel(file: File): Promise<{ publicUrl: string; storagePath: string }> {
   const timestamp = Date.now()
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
   const path = `${timestamp}_${safeName}`
@@ -29,7 +29,7 @@ export async function uploadModel(file: File): Promise<string> {
     .from(BUCKET)
     .getPublicUrl(path)
 
-  return data.publicUrl
+  return { publicUrl: data.publicUrl, storagePath: path }
 }
 
 /**
@@ -59,4 +59,15 @@ export async function listModels(): Promise<{ name: string; url: string; created
         created: f.created_at ?? '',
       }
     })
+}
+
+/**
+ * Delete a model from Supabase Storage by its storage path (filename).
+ */
+export async function deleteModel(storagePath: string): Promise<void> {
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .remove([storagePath])
+
+  if (error) throw new Error(`Delete failed: ${error.message}`)
 }

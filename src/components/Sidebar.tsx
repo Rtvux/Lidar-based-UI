@@ -7,10 +7,11 @@ interface SidebarProps {
   activeFileId: string | null
   onSelectFile: (id: string) => void
   onFileSelected: (file: File) => void
+  onDeleteFile?: (file: LoadedFile) => void
   uploading?: boolean
 }
 
-export function Sidebar({ files, activeFileId, onSelectFile, onFileSelected, uploading }: SidebarProps) {
+export function Sidebar({ files, activeFileId, onSelectFile, onFileSelected, onDeleteFile, uploading }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar__section">
@@ -19,7 +20,7 @@ export function Sidebar({ files, activeFileId, onSelectFile, onFileSelected, upl
 
       <div className="sidebar__files">
         <div className="sidebar__section-title">Models</div>
-        <FileList files={files} activeFileId={activeFileId} onSelect={onSelectFile} />
+        <FileList files={files} activeFileId={activeFileId} onSelect={onSelectFile} onDelete={onDeleteFile} />
       </div>
 
       <div className="sidebar__section">

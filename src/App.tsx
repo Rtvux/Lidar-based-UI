@@ -3,7 +3,7 @@ import { Header } from './components/Header'
 import { Sidebar } from './components/Sidebar'
 import { ViewerPanel } from './components/ViewerPanel'
 import type { LoadedFile } from './components/FileList'
-import { uploadModel, listModels } from './lib/supabase'
+import { uploadModel, listModels, deleteModel } from './lib/supabase'
 import './App.css'
 
 const LIDAR_EXTS = ['obj', 'stl', 'glb', 'gltf']
@@ -55,6 +55,7 @@ function App() {
           url: f.url,
           type: extToType(ext),
           extension: ext,
+          storagePath: f.name,
         }
       }).filter(f => ALL_EXTS.includes(f.extension))
 
@@ -77,7 +78,7 @@ function App() {
 
     setUploading(true)
     try {
-      const publicUrl = await uploadModel(file)
+      const { publicUrl, storagePath } = await uploadModel(file)
 
       const newFile: LoadedFile = {
         id: crypto.randomUUID(),
@@ -85,6 +86,7 @@ function App() {
         url: publicUrl,
         type: extToType(ext),
         extension: ext,
+        storagePath,
       }
 
       setFiles(prev => [newFile, ...prev])
@@ -96,6 +98,29 @@ function App() {
       setUploading(false)
     }
   }, [])
+
+  // Handle file delete from Supabase
+  const handleDelete = useCallback(async (file: LoadedFile) => {
+    if (!confirm(`Delete "${file.name}"?`)) return
+
+    if (file.storagePath) {
+      try {
+        await deleteModel(file.storagePath)
+      } catch (err) {
+        console.error('Delete failed:', err)
+        alert(`Delete failed: ${err instanceof Error ? err.message : err}`)
+        return
+      }
+    }
+
+    setFiles(prev => prev.filter(f => f.id !== file.id))
+    if (activeFileId === file.id) {
+      setActiveFileId(prev => {
+        const remaining = files.filter(f => f.id !== file.id)
+        return remaining.length > 0 ? remaining[0].id : null
+      })
+    }
+  }, [activeFileId, files])
 
   // Window-level drag-drop
   useEffect(() => {
@@ -129,6 +154,7 @@ function App() {
           activeFileId={activeFileId}
           onSelectFile={setActiveFileId}
           onFileSelected={handleFile}
+          onDeleteFile={handleDelete}
           uploading={uploading}
         />
         <ViewerPanel activeFile={activeFile} theme={theme} />

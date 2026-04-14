@@ -199,17 +199,8 @@
 .file-item {
   display: flex;
   align-items: center;
-  gap: 8px;
   width: 100%;
-  padding: 7px 10px;
-  border: none;
-  background: transparent;
   border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-family: var(--font);
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  text-align: left;
   transition: all 0.1s;
 }
 .file-item:hover {
@@ -217,7 +208,48 @@
 }
 .file-item--active {
   background: var(--color-accent-subtle);
+}
+.file-item--active .file-item__btn {
   color: var(--color-accent-text);
+}
+
+.file-item__btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-align: left;
+  min-width: 0;
+}
+
+.file-item__delete {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-right: 4px;
+  transition: all 0.1s;
+}
+.file-item:hover .file-item__delete {
+  display: flex;
+}
+.file-item__delete:hover {
+  color: #ef4444;
+  background: rgba(239,68,68,0.1);
 }
 
 .file-item__dot {
