@@ -25,6 +25,11 @@ public/lidar_model*/
 public/splat-viewer.html
 bonsai.splat
 
+# Env files
+.env
+.env.local
+.env.production
+
 # Claude
 .claude/
 

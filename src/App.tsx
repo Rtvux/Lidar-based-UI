@@ -3,25 +3,33 @@ import { Header } from './components/Header'
 import { Sidebar } from './components/Sidebar'
 import { ViewerPanel } from './components/ViewerPanel'
 import type { LoadedFile } from './components/FileList'
+import { uploadModel, listModels } from './lib/supabase'
 import './App.css'
-
-const DEMO_FILES: LoadedFile[] = [
-  { id: 'demo-lidar-1', name: 'LiDAR Scan 1', url: '/lidar_model/model.obj', type: 'lidar', extension: 'obj' },
-  { id: 'demo-lidar-2', name: 'LiDAR Scan 2', url: '/lidar_model2/model.obj', type: 'lidar', extension: 'obj' },
-  { id: 'demo-lidar-3', name: 'LiDAR Scan 3', url: '/lidar_model3/model.obj', type: 'lidar', extension: 'obj' },
-  { id: 'demo-splat', name: 'Demo Splat', url: '/model.splat', type: 'pointcloud', extension: 'splat' },
-]
 
 const LIDAR_EXTS = ['obj', 'stl', 'glb', 'gltf']
 const PC_EXTS = ['splat', 'ply', 'ksplat', 'spz', 'sog']
+const ALL_EXTS = [...LIDAR_EXTS, ...PC_EXTS]
+
+function extToType(ext: string): 'lidar' | 'pointcloud' {
+  return LIDAR_EXTS.includes(ext) ? 'lidar' : 'pointcloud'
+}
+
+function cleanName(filename: string): string {
+  // Remove timestamp prefix if present (e.g. "1234567890_model.obj" → "model")
+  return filename
+    .replace(/^\d+_/, '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/_/g, ' ')
+}
 
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark'
   })
-  const [files, setFiles] = useState<LoadedFile[]>(DEMO_FILES)
-  const [activeFileId, setActiveFileId] = useState<string | null>('demo-lidar-3')
+  const [files, setFiles] = useState<LoadedFile[]>([])
+  const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const dragCountRef = useRef(0)
 
   const activeFile = files.find(f => f.id === activeFileId) ?? null
@@ -36,24 +44,57 @@ function App() {
     setTheme(t => t === 'dark' ? 'light' : 'dark')
   }, [])
 
-  // Handle file upload
-  const handleFile = useCallback((file: File) => {
+  // Load existing files from Supabase on mount
+  useEffect(() => {
+    listModels().then(remoteFiles => {
+      const loaded: LoadedFile[] = remoteFiles.map(f => {
+        const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
+        return {
+          id: f.name,
+          name: cleanName(f.name),
+          url: f.url,
+          type: extToType(ext),
+          extension: ext,
+        }
+      }).filter(f => ALL_EXTS.includes(f.extension))
+
+      setFiles(loaded)
+      if (loaded.length > 0) {
+        setActiveFileId(loaded[0].id)
+      }
+    }).catch(err => {
+      console.error('Failed to load models from Supabase:', err)
+    })
+  }, [])
+
+  // Handle file upload → Supabase
+  const handleFile = useCallback(async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
-    if (![...LIDAR_EXTS, ...PC_EXTS].includes(ext)) {
+    if (!ALL_EXTS.includes(ext)) {
       alert('Supported formats: .obj, .stl, .glb, .splat, .ply')
       return
     }
 
-    const newFile: LoadedFile = {
-      id: crypto.randomUUID(),
-      name: file.name.replace(/\.[^.]+$/, ''),
-      url: URL.createObjectURL(file),
-      type: LIDAR_EXTS.includes(ext) ? 'lidar' : 'pointcloud',
-      extension: ext,
-    }
+    setUploading(true)
+    try {
+      const publicUrl = await uploadModel(file)
 
-    setFiles(prev => [...prev, newFile])
-    setActiveFileId(newFile.id)
+      const newFile: LoadedFile = {
+        id: crypto.randomUUID(),
+        name: file.name.replace(/\.[^.]+$/, ''),
+        url: publicUrl,
+        type: extToType(ext),
+        extension: ext,
+      }
+
+      setFiles(prev => [newFile, ...prev])
+      setActiveFileId(newFile.id)
+    } catch (err) {
+      console.error('Upload failed:', err)
+      alert(`Upload failed: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setUploading(false)
+    }
   }, [])
 
   // Window-level drag-drop
@@ -88,6 +129,7 @@ function App() {
           activeFileId={activeFileId}
           onSelectFile={setActiveFileId}
           onFileSelected={handleFile}
+          uploading={uploading}
         />
         <ViewerPanel activeFile={activeFile} theme={theme} />
       </div>

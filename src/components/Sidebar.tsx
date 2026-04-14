@@ -7,13 +7,14 @@ interface SidebarProps {
   activeFileId: string | null
   onSelectFile: (id: string) => void
   onFileSelected: (file: File) => void
+  uploading?: boolean
 }
 
-export function Sidebar({ files, activeFileId, onSelectFile, onFileSelected }: SidebarProps) {
+export function Sidebar({ files, activeFileId, onSelectFile, onFileSelected, uploading }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar__section">
-        <UploadZone onFileSelected={onFileSelected} />
+        <UploadZone onFileSelected={onFileSelected} uploading={uploading} />
       </div>
 
       <div className="sidebar__files">
