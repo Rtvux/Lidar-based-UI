@@ -115,10 +115,8 @@ function App() {
 
     setFiles(prev => prev.filter(f => f.id !== file.id))
     if (activeFileId === file.id) {
-      setActiveFileId(prev => {
-        const remaining = files.filter(f => f.id !== file.id)
-        return remaining.length > 0 ? remaining[0].id : null
-      })
+      const remaining = files.filter(f => f.id !== file.id)
+      setActiveFileId(remaining.length > 0 ? remaining[0].id : null)
     }
   }, [activeFileId, files])
 
