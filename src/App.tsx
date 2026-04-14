@@ -76,13 +76,18 @@ function App() {
       return
     }
 
+    const defaultName = file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ')
+    const userInput = prompt('Name this model:', defaultName)
+    if (userInput === null) return // cancelled
+    const modelName = userInput.trim() || defaultName
+
     setUploading(true)
     try {
       const { publicUrl, storagePath } = await uploadModel(file)
 
       const newFile: LoadedFile = {
         id: crypto.randomUUID(),
-        name: file.name.replace(/\.[^.]+$/, ''),
+        name: modelName,
         url: publicUrl,
         type: extToType(ext),
         extension: ext,
