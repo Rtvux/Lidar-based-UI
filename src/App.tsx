@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Header } from './components/Header'
 import { Sidebar } from './components/Sidebar'
 import { ViewerPanel } from './components/ViewerPanel'
+import { NameModal } from './components/NameModal'
 import type { LoadedFile } from './components/FileList'
 import { uploadModel, listModels, deleteModel } from './lib/supabase'
 import './App.css'
@@ -30,6 +31,7 @@ function App() {
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
   const dragCountRef = useRef(0)
 
   const activeFile = files.find(f => f.id === activeFileId) ?? null
@@ -68,18 +70,22 @@ function App() {
     })
   }, [])
 
-  // Handle file upload → Supabase
-  const handleFile = useCallback(async (file: File) => {
+  // Handle file selection → show naming modal
+  const handleFile = useCallback((file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
     if (!ALL_EXTS.includes(ext)) {
       alert('Supported formats: .obj, .stl, .glb, .splat, .ply')
       return
     }
+    setPendingFile(file)
+  }, [])
 
-    const defaultName = file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ')
-    const userInput = prompt('Name this model:', defaultName)
-    if (userInput === null) return // cancelled
-    const modelName = userInput.trim() || defaultName
+  // Handle confirmed upload with name
+  const handleConfirmUpload = useCallback(async (modelName: string) => {
+    if (!pendingFile) return
+    const file = pendingFile
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    setPendingFile(null)
 
     setUploading(true)
     try {
@@ -102,7 +108,7 @@ function App() {
     } finally {
       setUploading(false)
     }
-  }, [])
+  }, [pendingFile])
 
   // Handle file delete from Supabase
   const handleDelete = useCallback(async (file: LoadedFile) => {
@@ -166,6 +172,15 @@ function App() {
       <footer className="app-footer">
         Scroll to zoom &middot; Drag to orbit &middot; Right-drag to pan
       </footer>
+
+      {pendingFile && (
+        <NameModal
+          defaultName={pendingFile.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ')}
+          extension={pendingFile.name.split('.').pop()?.toLowerCase() ?? ''}
+          onConfirm={handleConfirmUpload}
+          onCancel={() => setPendingFile(null)}
+        />
+      )}
 
       {isDragging && (
         <div className="drop-overlay">
