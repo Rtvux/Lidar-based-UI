@@ -1,13 +1,16 @@
 import { GaussianSplatViewer } from './GaussianSplatViewer'
 import { GLBViewer } from './GLBViewer'
 import type { LoadedFile } from './FileList'
+import type { TreatmentValues } from '../treatments'
 
 interface ViewerPanelProps {
   activeFile: LoadedFile | null
   theme: 'light' | 'dark'
+  activeTreatment: string
+  treatmentValues: TreatmentValues
 }
 
-export function ViewerPanel({ activeFile, theme }: ViewerPanelProps) {
+export function ViewerPanel({ activeFile, theme, activeTreatment, treatmentValues }: ViewerPanelProps) {
   if (!activeFile) {
     return (
       <div className="viewer-panel">
@@ -22,9 +25,19 @@ export function ViewerPanel({ activeFile, theme }: ViewerPanelProps) {
   return (
     <div className="viewer-panel">
       {activeFile.type === 'pointcloud' ? (
-        <GaussianSplatViewer url={activeFile.url} theme={theme} />
+        <GaussianSplatViewer
+          url={activeFile.url}
+          theme={theme}
+          activeTreatment={activeTreatment}
+          treatmentValues={treatmentValues}
+        />
       ) : (
-        <GLBViewer url={activeFile.url} theme={theme} />
+        <GLBViewer
+          url={activeFile.url}
+          theme={theme}
+          activeTreatment={activeTreatment}
+          treatmentValues={treatmentValues}
+        />
       )}
     </div>
   )

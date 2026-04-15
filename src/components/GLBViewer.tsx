@@ -5,65 +5,52 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { STLLoader } from 'three/addons/loaders/STLLoader.js'
 import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js'
+import { TREATMENTS } from '../treatments'
+import type { TreatmentValues, TreatmentDef } from '../treatments'
 
 interface GLBViewerProps {
   url: string
   theme?: 'light' | 'dark'
+  activeTreatment: string
+  treatmentValues: TreatmentValues
 }
 
-const vertexShader = `
-  uniform float uTime;
-  uniform float uSize;
-  uniform float uPixelRatio;
-  attribute float aRandom;
-  attribute vec3 aNormal;
-  varying float vRandom;
-
-  void main() {
-    vRandom = aRandom;
-
-    float breathPhase = uTime * 1.0 + aRandom * 6.2831;
-    float breathAmount = sin(breathPhase) * 0.002;
-
-    vec3 displaced = position + aNormal * breathAmount;
-
-    vec4 mvPos = modelViewMatrix * vec4(displaced, 1.0);
-    gl_Position = projectionMatrix * mvPos;
-
-    float sizeVariation = 0.7 + 0.5 * aRandom;
-    gl_PointSize = uSize * sizeVariation * uPixelRatio * (1.0 / -mvPos.z);
-    gl_PointSize = clamp(gl_PointSize, 0.5, 5.0);
-  }
-`
-
-const fragmentShader = `
-  uniform float uTime;
-  uniform vec3 uColorInner;
-  uniform vec3 uColorOuter;
-  uniform float uOpacity;
-  varying float vRandom;
-
-  void main() {
-    float dist = length(gl_PointCoord - 0.5);
-    if (dist > 0.45) discard;
-
-    float dot = smoothstep(0.45, 0.25, dist);
-    vec3 color = uColorInner;
-    float pulse = 0.95 + 0.05 * sin(uTime * 1.0 + vRandom * 6.2831);
-
-    gl_FragColor = vec4(color, dot * uOpacity * pulse);
-  }
-`
-
 /**
- * Loads a GLB/GLTF file, samples particles from its mesh surfaces,
- * and renders them with the same blue particle shader.
+ * Adds per-vertex barycentric coordinates (for wireframe shader).
+ * Requires non-indexed geometry.
  */
-export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
+function addBarycentric(geometry: THREE.BufferGeometry) {
+  let geom = geometry
+  if (geom.index) geom = geom.toNonIndexed()
+  const count = geom.getAttribute('position').count
+  const bary = new Float32Array(count * 3)
+  for (let i = 0; i < count; i += 3) {
+    bary[i * 3] = 1; bary[i * 3 + 1] = 0; bary[i * 3 + 2] = 0
+    bary[(i + 1) * 3] = 0; bary[(i + 1) * 3 + 1] = 1; bary[(i + 1) * 3 + 2] = 0
+    bary[(i + 2) * 3] = 0; bary[(i + 2) * 3 + 1] = 0; bary[(i + 2) * 3 + 2] = 1
+  }
+  geom.setAttribute('aBarycentric', new THREE.BufferAttribute(bary, 3))
+  return geom
+}
+
+export function GLBViewer({ url, theme = 'dark', activeTreatment, treatmentValues }: GLBViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const sceneRef = useRef<THREE.Scene | null>(null)
+  const meshesRef = useRef<{ geometry: THREE.BufferGeometry; matrix: THREE.Matrix4 }[]>([])
+  const sampledDataRef = useRef<{
+    positions: Float32Array
+    normals: Float32Array
+    randoms: Float32Array
+    count: number
+  } | null>(null)
+  const treatmentObjectsRef = useRef<THREE.Object3D[]>([])
+  const uniformsListRef = useRef<Record<string, THREE.IUniform>[]>([])
+  const bboxRef = useRef<THREE.Box3>(new THREE.Box3())
+  const loadedRef = useRef(false)
 
+  // Initial scene setup + model load
   useEffect(() => {
     if (!url || !containerRef.current) return
 
@@ -74,6 +61,11 @@ export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
     container.querySelector('[data-status]')?.remove()
 
     let disposed = false
+    loadedRef.current = false
+    meshesRef.current = []
+    sampledDataRef.current = null
+    treatmentObjectsRef.current = []
+    uniformsListRef.current = []
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(container.clientWidth, container.clientHeight)
@@ -83,17 +75,21 @@ export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
     container.insertBefore(renderer.domElement, container.firstChild)
     rendererRef.current = renderer
 
+    // Enable standard derivatives (for anti-aliased wireframe)
+    const gl = renderer.getContext()
+    if (gl instanceof WebGLRenderingContext) {
+      gl.getExtension('OES_standard_derivatives')
+    }
+
     const scene = new THREE.Scene()
-    const camera = new THREE.PerspectiveCamera(
-      50, container.clientWidth / container.clientHeight, 0.01, 1000
-    )
+    sceneRef.current = scene
+
+    const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.01, 1000)
     camera.position.set(0, 1, 3)
 
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
-    controls.rotateSpeed = 0.8
-    controls.zoomSpeed = 1.2
     controls.enablePan = true
     controls.autoRotate = true
     controls.autoRotateSpeed = 0.8
@@ -104,154 +100,87 @@ export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
     status.textContent = 'Loading model...'
     container.appendChild(status)
 
-    const uniforms = {
-      uTime: { value: 0 },
-      uSize: { value: 6.0 },
-      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-      uColorInner: { value: new THREE.Color('#7dd3fc') },
-      uColorOuter: { value: new THREE.Color('#38bdf8') },
-      uOpacity: { value: 0.4 },
-    }
-
-    // Detect format and load meshes
+    // Load model and extract meshes
     const ext = url.split('.').pop()?.split('?')[0]?.toLowerCase() ?? ''
 
-    function processLoadedMeshes(meshes: THREE.Mesh[]) {
+    function collectMeshesFromObject(object: THREE.Object3D) {
+      const data: { geometry: THREE.BufferGeometry; matrix: THREE.Matrix4 }[] = []
+      object.traverse(child => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh
+          mesh.updateMatrixWorld(true)
+          const geom = mesh.geometry.clone()
+          geom.applyMatrix4(mesh.matrixWorld)
+          if (!geom.getAttribute('normal')) geom.computeVertexNormals()
+          data.push({ geometry: geom, matrix: mesh.matrixWorld.clone() })
+        }
+      })
+      return data
+    }
+
+    function onMeshesLoaded() {
       if (disposed) return
-      if (meshes.length === 0) {
-        status.textContent = 'Error: No meshes found in model'
-        return
+      status.textContent = 'Processing...'
+
+      // Compute bounding box across all meshes
+      const bbox = new THREE.Box3()
+      for (const m of meshesRef.current) {
+        bbox.expandByObject(new THREE.Mesh(m.geometry))
       }
+      bboxRef.current = bbox
 
-      status.textContent = `Sampling particles from ${meshes.length} mesh(es)...`
-
-      const TARGET_PARTICLES = 15000
-      const particlesPerMesh = Math.ceil(TARGET_PARTICLES / meshes.length)
-
-      const allPositions: number[] = []
-      const allNormals: number[] = []
-      const allRandoms: number[] = []
-
+      // Sample particles (for treatments that need them)
+      const TARGET = 15000
+      const meshes = meshesRef.current
+      const per = Math.ceil(TARGET / Math.max(meshes.length, 1))
+      const positions: number[] = []
+      const normals: number[] = []
+      const randoms: number[] = []
       const tempPos = new THREE.Vector3()
       const tempNorm = new THREE.Vector3()
 
-      for (const mesh of meshes) {
-        if (!mesh.geometry.getAttribute('normal')) {
-          mesh.geometry.computeVertexNormals()
-        }
-        // Ensure geometry has index for sampler
-        if (!mesh.geometry.index) {
-          const posAttr = mesh.geometry.getAttribute('position')
+      for (const { geometry } of meshes) {
+        let geom = geometry
+        if (!geom.index) {
           const indices = []
-          for (let i = 0; i < posAttr.count; i++) indices.push(i)
-          mesh.geometry.setIndex(indices)
+          for (let i = 0; i < geom.getAttribute('position').count; i++) indices.push(i)
+          geom = geom.clone()
+          geom.setIndex(indices)
         }
-
+        const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial())
         try {
           const sampler = new MeshSurfaceSampler(mesh).build()
-          for (let i = 0; i < particlesPerMesh; i++) {
+          for (let i = 0; i < per; i++) {
             sampler.sample(tempPos, tempNorm)
-            allPositions.push(tempPos.x, tempPos.y, tempPos.z)
-            allNormals.push(tempNorm.x, tempNorm.y, tempNorm.z)
-            allRandoms.push(Math.random())
+            positions.push(tempPos.x, tempPos.y, tempPos.z)
+            normals.push(tempNorm.x, tempNorm.y, tempNorm.z)
+            randoms.push(Math.random())
           }
-        } catch (e) {
-          console.warn('[Model] Sampler failed for mesh, using vertices directly', e)
-          const posAttr = mesh.geometry.getAttribute('position')
-          const normAttr = mesh.geometry.getAttribute('normal')
-          const step = Math.max(1, Math.floor(posAttr.count / particlesPerMesh))
+        } catch {
+          const posAttr = geom.getAttribute('position')
+          const normAttr = geom.getAttribute('normal')
+          const step = Math.max(1, Math.floor(posAttr.count / per))
           for (let i = 0; i < posAttr.count; i += step) {
-            allPositions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i))
-            if (normAttr) {
-              allNormals.push(normAttr.getX(i), normAttr.getY(i), normAttr.getZ(i))
-            } else {
-              allNormals.push(0, 1, 0)
-            }
-            allRandoms.push(Math.random())
+            positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i))
+            if (normAttr) normals.push(normAttr.getX(i), normAttr.getY(i), normAttr.getZ(i))
+            else normals.push(0, 1, 0)
+            randoms.push(Math.random())
           }
         }
       }
 
-      const count = allPositions.length / 3
-      if (disposed) return
-
-      // === 1. Translucent blue skin (the actual mesh) ===
-      for (const mesh of meshes) {
-        // Fresnel/edge-glow material — transparent at center, visible at edges
-        const skinMat = new THREE.ShaderMaterial({
-          vertexShader: `
-            varying vec3 vNormal;
-            varying vec3 vViewDir;
-            void main() {
-              vNormal = normalize(normalMatrix * normal);
-              vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-              vViewDir = normalize(-mvPos.xyz);
-              gl_Position = projectionMatrix * mvPos;
-            }
-          `,
-          fragmentShader: `
-            varying vec3 vNormal;
-            varying vec3 vViewDir;
-            void main() {
-              // Fresnel: stronger at edges (where normal is perpendicular to view)
-              float fresnel = 1.0 - abs(dot(vNormal, vViewDir));
-              fresnel = pow(fresnel, 2.0);
-
-              vec3 edgeColor = vec3(0.22, 0.52, 0.92);   // bright blue at edges
-              vec3 faceColor = vec3(0.08, 0.16, 0.32);    // dark blue on flat faces
-
-              vec3 color = mix(faceColor, edgeColor, fresnel);
-              float alpha = mix(0.05, 0.4, fresnel);       // nearly invisible face-on, visible at edges
-
-              gl_FragColor = vec4(color, alpha);
-            }
-          `,
-          transparent: true,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        })
-        const skinMesh = new THREE.Mesh(mesh.geometry.clone(), skinMat)
-        scene.add(skinMesh)
-
-        // Wireframe overlay at edges for extra structure definition
-        const wireMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color('#1d4ed8'),
-          wireframe: true,
-          transparent: true,
-          opacity: 0.06,
-        })
-        const wireMesh = new THREE.Mesh(mesh.geometry.clone(), wireMat)
-        scene.add(wireMesh)
+      sampledDataRef.current = {
+        positions: new Float32Array(positions),
+        normals: new Float32Array(normals),
+        randoms: new Float32Array(randoms),
+        count: positions.length / 3,
       }
 
-      // Subtle ambient — fresnel shader is self-lit, this is just for the wireframe
-      const ambLight = new THREE.AmbientLight(0x334466, 0.3)
-      scene.add(ambLight)
-
-      // === 2. Fine particles on top ===
-      const geometry = new THREE.BufferGeometry()
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(allPositions, 3))
-      geometry.setAttribute('aNormal', new THREE.Float32BufferAttribute(allNormals, 3))
-      geometry.setAttribute('aRandom', new THREE.Float32BufferAttribute(allRandoms, 1))
-
-      const material = new THREE.ShaderMaterial({
-        vertexShader,
-        fragmentShader,
-        uniforms,
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.NormalBlending,
-      })
-
-      const points = new THREE.Points(geometry, material)
-      scene.add(points)
-
-      geometry.computeBoundingBox()
-      const box = geometry.boundingBox!
+      // Center camera
       const center = new THREE.Vector3()
-      box.getCenter(center)
+      bbox.getCenter(center)
       const size = new THREE.Vector3()
-      box.getSize(size)
+      bbox.getSize(size)
       const maxDim = Math.max(size.x, size.y, size.z)
 
       controls.target.copy(center)
@@ -262,58 +191,114 @@ export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
       camera.updateProjectionMatrix()
       controls.update()
 
+      // Subtle light for any shaders that use it
+      const ambLight = new THREE.AmbientLight(0x334466, 0.3)
+      scene.add(ambLight)
+
+      loadedRef.current = true
       status.style.display = 'none'
-      console.log(`[Model] ${count.toLocaleString()} particles + translucent skin, format: ${ext}, size: ${maxDim.toFixed(2)}`)
+
+      // Apply the initial treatment
+      applyCurrentTreatment()
     }
 
-    function collectMeshes(object: THREE.Object3D): THREE.Mesh[] {
-      const meshes: THREE.Mesh[] = []
-      object.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const mesh = child as THREE.Mesh
-          mesh.updateMatrixWorld(true)
-          const geom = mesh.geometry.clone()
-          geom.applyMatrix4(mesh.matrixWorld)
-          meshes.push(new THREE.Mesh(geom, new THREE.MeshBasicMaterial()))
+    function applyCurrentTreatment() {
+      if (!loadedRef.current || disposed) return
+      const treatment = TREATMENTS[activeTreatment]
+      if (!treatment) return
+      applyTreatmentToScene(treatment, treatmentValues)
+    }
+
+    function applyTreatmentToScene(treatment: TreatmentDef, values: TreatmentValues) {
+      if (!sceneRef.current) return
+      const s = sceneRef.current
+
+      // Remove previous treatment objects
+      for (const obj of treatmentObjectsRef.current) {
+        s.remove(obj)
+        ;(obj as THREE.Points | THREE.Mesh).geometry?.dispose?.()
+        const mat = (obj as THREE.Points | THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
+        if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+        else mat?.dispose?.()
+      }
+      treatmentObjectsRef.current = []
+      uniformsListRef.current = []
+
+      const extras = {
+        pixelRatio: Math.min(window.devicePixelRatio, 2),
+        boundingBox: { min: bboxRef.current.min.clone(), max: bboxRef.current.max.clone() },
+      }
+
+      // Mesh treatment
+      if (treatment.needsMeshGeometry && treatment.meshVertexShader && treatment.meshFragmentShader) {
+        for (const { geometry } of meshesRef.current) {
+          // Add barycentric for x-ray
+          let geom = geometry
+          if (treatment.id === 'xray') {
+            geom = addBarycentric(geometry.clone())
+          }
+
+          const uniforms = treatment.buildUniforms(values, extras)
+          const material = new THREE.ShaderMaterial({
+            vertexShader: treatment.meshVertexShader,
+            fragmentShader: treatment.meshFragmentShader,
+            uniforms,
+            transparent: treatment.materialOptions?.transparent ?? true,
+            depthWrite: treatment.materialOptions?.depthWrite ?? false,
+            blending: treatment.materialOptions?.blending ?? THREE.NormalBlending,
+            side: treatment.materialOptions?.side ?? THREE.DoubleSide,
+            })
+          const mesh = new THREE.Mesh(geom, material)
+          s.add(mesh)
+          treatmentObjectsRef.current.push(mesh)
+          uniformsListRef.current.push(uniforms)
         }
-      })
-      return meshes
+      }
+
+      // Points treatment
+      if (treatment.needsSampledPoints && treatment.pointsVertexShader && treatment.pointsFragmentShader && sampledDataRef.current) {
+        const d = sampledDataRef.current
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(d.positions, 3))
+        g.setAttribute('aNormal', new THREE.BufferAttribute(d.normals, 3))
+        g.setAttribute('aRandom', new THREE.BufferAttribute(d.randoms, 1))
+
+        const uniforms = treatment.buildUniforms(values, extras)
+        const material = new THREE.ShaderMaterial({
+          vertexShader: treatment.pointsVertexShader,
+          fragmentShader: treatment.pointsFragmentShader,
+          uniforms,
+          transparent: true,
+          depthWrite: false,
+          blending: treatment.materialOptions?.blending ?? THREE.NormalBlending,
+        })
+        const points = new THREE.Points(g, material)
+        s.add(points)
+        treatmentObjectsRef.current.push(points)
+        uniformsListRef.current.push(uniforms)
+      }
     }
 
+    // Load file based on extension
     if (ext === 'obj') {
-      // OBJ loader
-      const loader = new OBJLoader()
-      loader.load(
-        url,
-        (obj) => processLoadedMeshes(collectMeshes(obj)),
-        (p) => { if (p.total > 0) status.textContent = `Downloading... ${Math.round(p.loaded/p.total*100)}%` },
-        (e) => { status.textContent = `Error: ${e instanceof Error ? e.message : e}` }
-      )
+      new OBJLoader().load(url, (obj) => {
+        if (disposed) return
+        meshesRef.current = collectMeshesFromObject(obj)
+        onMeshesLoaded()
+      }, undefined, (e) => { status.textContent = `Error: ${e instanceof Error ? e.message : e}` })
     } else if (ext === 'stl') {
-      // STL loader — returns a single BufferGeometry
-      const loader = new STLLoader()
-      loader.load(
-        url,
-        (geometry) => {
-          geometry.computeVertexNormals()
-          const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial())
-          processLoadedMeshes([mesh])
-        },
-        (p) => { if (p.total > 0) status.textContent = `Downloading... ${Math.round(p.loaded/p.total*100)}%` },
-        (e) => { status.textContent = `Error: ${e instanceof Error ? e.message : e}` }
-      )
+      new STLLoader().load(url, (geom) => {
+        if (disposed) return
+        geom.computeVertexNormals()
+        meshesRef.current = [{ geometry: geom, matrix: new THREE.Matrix4() }]
+        onMeshesLoaded()
+      }, undefined, (e) => { status.textContent = `Error: ${e instanceof Error ? e.message : e}` })
     } else {
-      // GLB/GLTF loader (default)
-      const loader = new GLTFLoader()
-      loader.load(
-        url,
-        (gltf) => processLoadedMeshes(collectMeshes(gltf.scene)),
-        (p) => { if (p.total > 0) status.textContent = `Downloading... ${Math.round(p.loaded/p.total*100)}%` },
-        (error) => {
-          status.textContent = `Error: ${error instanceof Error ? error.message : error}`
-          console.error('[Model] Load error:', error)
-        }
-      )
+      new GLTFLoader().load(url, (gltf) => {
+        if (disposed) return
+        meshesRef.current = collectMeshesFromObject(gltf.scene)
+        onMeshesLoaded()
+      }, undefined, (e) => { status.textContent = `Error: ${e instanceof Error ? e.message : e}` })
     }
 
     const clock = new THREE.Clock()
@@ -329,7 +314,10 @@ export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
     function animate() {
       if (disposed) return
       rafId = requestAnimationFrame(animate)
-      uniforms.uTime.value = clock.getElapsedTime()
+      const t = clock.getElapsedTime()
+      for (const uniforms of uniformsListRef.current) {
+        if (uniforms.uTime) uniforms.uTime.value = t
+      }
       controls.update()
       renderer.render(scene, camera)
     }
@@ -346,14 +334,114 @@ export function GLBViewer({ url, theme = 'dark' }: GLBViewerProps) {
     }
 
     return () => { cleanupRef.current?.() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url])
 
-  // React to theme changes
+  // Theme change
   useEffect(() => {
     if (rendererRef.current) {
       rendererRef.current.setClearColor(theme === 'dark' ? 0x050510 : 0xC8CACF)
     }
   }, [theme])
+
+  // Treatment change — rebuild materials
+  useEffect(() => {
+    if (!loadedRef.current || !sceneRef.current) return
+    const treatment = TREATMENTS[activeTreatment]
+    if (!treatment) return
+
+    const scene = sceneRef.current
+
+    // Dispose existing treatment objects
+    for (const obj of treatmentObjectsRef.current) {
+      scene.remove(obj)
+      ;(obj as THREE.Points | THREE.Mesh).geometry?.dispose?.()
+      const mat = (obj as THREE.Points | THREE.Mesh).material as THREE.Material | undefined
+      mat?.dispose?.()
+    }
+    treatmentObjectsRef.current = []
+    uniformsListRef.current = []
+
+    const extras = {
+      pixelRatio: Math.min(window.devicePixelRatio, 2),
+      boundingBox: { min: bboxRef.current.min.clone(), max: bboxRef.current.max.clone() },
+    }
+
+    // Mesh treatment
+    if (treatment.needsMeshGeometry && treatment.meshVertexShader && treatment.meshFragmentShader) {
+      for (const { geometry } of meshesRef.current) {
+        let geom = geometry
+        if (treatment.id === 'xray') {
+          geom = addBarycentric(geometry.clone())
+        }
+
+        const uniforms = treatment.buildUniforms(treatmentValues, extras)
+        const material = new THREE.ShaderMaterial({
+          vertexShader: treatment.meshVertexShader,
+          fragmentShader: treatment.meshFragmentShader,
+          uniforms,
+          transparent: treatment.materialOptions?.transparent ?? true,
+          depthWrite: treatment.materialOptions?.depthWrite ?? false,
+          blending: treatment.materialOptions?.blending ?? THREE.NormalBlending,
+          side: treatment.materialOptions?.side ?? THREE.DoubleSide,
+        })
+        const mesh = new THREE.Mesh(geom, material)
+        scene.add(mesh)
+        treatmentObjectsRef.current.push(mesh)
+        uniformsListRef.current.push(uniforms)
+      }
+    }
+
+    if (treatment.needsSampledPoints && treatment.pointsVertexShader && treatment.pointsFragmentShader && sampledDataRef.current) {
+      const d = sampledDataRef.current
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(d.positions, 3))
+      g.setAttribute('aNormal', new THREE.BufferAttribute(d.normals, 3))
+      g.setAttribute('aRandom', new THREE.BufferAttribute(d.randoms, 1))
+
+      const uniforms = treatment.buildUniforms(treatmentValues, extras)
+      const material = new THREE.ShaderMaterial({
+        vertexShader: treatment.pointsVertexShader,
+        fragmentShader: treatment.pointsFragmentShader,
+        uniforms,
+        transparent: true,
+        depthWrite: false,
+        blending: treatment.materialOptions?.blending ?? THREE.NormalBlending,
+      })
+      const points = new THREE.Points(g, material)
+      scene.add(points)
+      treatmentObjectsRef.current.push(points)
+      uniformsListRef.current.push(uniforms)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTreatment])
+
+  // Values change — update uniforms in place
+  useEffect(() => {
+    if (!loadedRef.current) return
+    const treatment = TREATMENTS[activeTreatment]
+    if (!treatment) return
+
+    const extras = {
+      pixelRatio: Math.min(window.devicePixelRatio, 2),
+      boundingBox: { min: bboxRef.current.min.clone(), max: bboxRef.current.max.clone() },
+    }
+    const newUniforms = treatment.buildUniforms(treatmentValues, extras)
+
+    for (const uniforms of uniformsListRef.current) {
+      for (const key of Object.keys(newUniforms)) {
+        if (uniforms[key]) {
+          const existing = uniforms[key].value
+          const incoming = newUniforms[key].value
+          if (existing instanceof THREE.Color && incoming instanceof THREE.Color) {
+            existing.copy(incoming)
+          } else {
+            uniforms[key].value = incoming
+          }
+        }
+      }
+    }
+  }, [treatmentValues, activeTreatment])
 
   return <div ref={containerRef} className="viewer-container" />
 }

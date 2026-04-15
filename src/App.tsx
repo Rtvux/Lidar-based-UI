@@ -5,6 +5,8 @@ import { ViewerPanel } from './components/ViewerPanel'
 import { NameModal } from './components/NameModal'
 import type { LoadedFile } from './components/FileList'
 import { uploadModel, listModels, deleteModel } from './lib/supabase'
+import { TREATMENTS } from './treatments'
+import type { TreatmentValues } from './treatments'
 import './App.css'
 
 const LIDAR_EXTS = ['obj', 'stl', 'glb', 'gltf']
@@ -32,9 +34,22 @@ function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [activeTreatment, setActiveTreatment] = useState<string>('particles')
+  const [treatmentValues, setTreatmentValues] = useState<TreatmentValues>(
+    () => TREATMENTS['particles'].getDefaultValues()
+  )
   const dragCountRef = useRef(0)
 
   const activeFile = files.find(f => f.id === activeFileId) ?? null
+
+  const handleSelectTreatment = useCallback((id: string) => {
+    setActiveTreatment(id)
+    setTreatmentValues(TREATMENTS[id].getDefaultValues())
+  }, [])
+
+  const handleTreatmentValueChange = useCallback((key: string, value: number | string | boolean) => {
+    setTreatmentValues(prev => ({ ...prev, [key]: value }))
+  }, [])
 
   // Theme sync
   useEffect(() => {
@@ -165,8 +180,18 @@ function App() {
           onFileSelected={handleFile}
           onDeleteFile={handleDelete}
           uploading={uploading}
+          activeTreatment={activeTreatment}
+          treatmentValues={treatmentValues}
+          viewerType={activeFile?.type === 'lidar' ? 'mesh' : activeFile?.type === 'pointcloud' ? 'pointcloud' : null}
+          onSelectTreatment={handleSelectTreatment}
+          onTreatmentValueChange={handleTreatmentValueChange}
         />
-        <ViewerPanel activeFile={activeFile} theme={theme} />
+        <ViewerPanel
+          activeFile={activeFile}
+          theme={theme}
+          activeTreatment={activeTreatment}
+          treatmentValues={treatmentValues}
+        />
       </div>
 
       <footer className="app-footer">
